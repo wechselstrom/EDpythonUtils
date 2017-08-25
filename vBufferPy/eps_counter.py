@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 
-# Copyright: (C) 2010 RobotCub Consortium
-# Author: Paul Fitzpatrick
+# Author: Stefan Weber
 # CopyPolicy: Released under the terms of the LGPLv2.1 or later, see LGPL.TXT
 
 import yarp
 import numpy as np
-import event_driven
-import queue
-import threading
 import vBuffer
 
+yarp.Network.init()
 
 bottleBuffer = vBuffer.VBottleBuffer(100000, "/eps_counter:i")
 with bottleBuffer as buf:

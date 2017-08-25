@@ -1,16 +1,12 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
-# Copyright: (C) 2010 RobotCub Consortium
-# Author: Paul Fitzpatrick
+# Author: Stefan Weber
 # CopyPolicy: Released under the terms of the LGPLv2.1 or later, see LGPL.TXT
 
 import yarp
 import numpy as np
-import numba
-from numba import jit
 import event_driven
 import queue
-import threading
 
 class VBottleBuffer(yarp.PortReader):
 
@@ -27,7 +23,6 @@ class VBottleBuffer(yarp.PortReader):
             self.timeFrameQueue.put(out)
 
     def __enter__(self):
-        yarp.Network.init()
         self.pi = yarp.Port()
         self.pi.setReader(self)
         self.pi.open(self.portname);
@@ -71,7 +66,7 @@ class Buffer():
     
 
 if __name__ == '__main__':
-    import time
+    yarp.Network.init()
     bottleBuffer = VBottleBuffer(100000, "/buffer:i")
     with bottleBuffer as buf:
         while True:

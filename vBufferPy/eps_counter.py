@@ -9,8 +9,8 @@ import vBuffer
 
 yarp.Network.init()
 
-bottleBuffer = vBuffer.VBottleBuffer(100000, "/eps_counter:i")
-with bottleBuffer as buf:
+bottleBuffer = vBuffer.VBottleBuffer(1000, "/eps_counter:i")
+with bottleBuffer:
     po = yarp.BufferedPortBottle()
     po.open("/eps_counter:o")
 
@@ -18,8 +18,8 @@ with bottleBuffer as buf:
         data = bottleBuffer.timeFrameQueue.get()
         bout = po.prepare()
         bout.clear()
-        val = int(data.shape[0])
-        bout.addInt(val)
-        print('writing %s' % val)
+        eps = 1e6 * data.shape[0] / bottleBuffer.storedEvents.timestep
+        bout.addDouble(eps)
+        print('writing %.4E' % eps)
         po.write()
 

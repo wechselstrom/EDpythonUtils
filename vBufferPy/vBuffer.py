@@ -8,21 +8,80 @@ import numpy as np
 import event_driven
 import queue
 import sys
+import time
+import multiprocessing
 
 
-class VBottleBuffer(yarp.PortReader):
+class VBottleBuffer():
+    def __init__(self, timestep=1000, limit=1<<24, portname='/vBuffer:i'):
+        self.bottleQueue = multiprocessing.Queue()
+        self.timeFrameQueue = multiprocessing.Queue()
+        self.killswitch = multiprocessing.Event()
+        self._p1 = _ReceiverProcess(self.bottleQueue, self.killswitch, portname)
+        self._p2 = _BufferProcess(self.bottleQueue, self.timeFrameQueue,
+                                  self.killswitch, timestep, limit)
+    def __enter__(self):
+        self._p1.start()
+        self._p2.start()
+    
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.killswitch.set()
+        self._p1.join()
+        self._p2.join()
 
-    def __init__(self, timestep, portname):
+
+class _BufferProcess(multiprocessing.Process):
+    def __init__(self, q_in, out_q, killswitch, timestep, limit):
         super().__init__()
-        self.storedEvents = Buffer(timestep)
-        self.timeFrameQueue = queue.Queue()
-        self.portname = portname
+        self.buf = Buffer(timestep, limit)
+        self.killswitch = killswitch
+        self.q_in = q_in
+        self.out_q = out_q
 
-    def addEvents(self, data):
-        out = self.storedEvents.add_data(data)
-        #print(data[-1][1], data[0][1])
-        for x in out:
-            self.timeFrameQueue.put(x)
+
+    def run(self):
+        i=0
+        while not self.killswitch.is_set():
+            i+=1
+            inp = self.q_in.get()
+            outp = self.buf.add_data(inp)
+            for x in outp:
+                self.out_q.put(x)
+            #if not i%10:
+            #    print('q_in:%d, out_q:%d, num:%d' %(self.q_in.qsize(),
+            #                                self.out_q.qsize(),
+            #                                       len(outp)))
+
+class _ReceiverProcess(multiprocessing.Process):
+    def __init__(self, out_q, killswitch, portname):
+        super().__init__()
+
+        self.out_q = out_q
+        self.decode_q = queue.Queue()
+        self.rec = Receiver(portname, q=self.decode_q)
+        self.killswitch = killswitch
+
+
+    def run(self):
+        i=0
+        with self.rec as rec:
+            while not self.killswitch.is_set():
+                binp = self.decode_q.get()
+                data = event_driven.getData(binp)
+                self.out_q.put(data)
+                i+=1
+                #if not i%10:
+                #    print('decode_q:%d, out_q:%d' %(self.decode_q.qsize(),
+                #                                        self.out_q.qsize()))
+
+
+class Receiver(yarp.PortReader):
+
+    def __init__(self, portname, q=queue.Queue()):
+        super().__init__()
+        self.q = q
+        self.portname = portname
+        self.last = 0
 
     def __enter__(self):
         self.pi = yarp.Port()
@@ -30,28 +89,26 @@ class VBottleBuffer(yarp.PortReader):
         self.pi.open(self.portname);
 
     def __exit__(self, exc_type, exc_value, traceback):
-        yarp.Network.fini();
+        pass
     
     def read(self, connection):
-        #print('entered read')
-        if not(connection.isValid()):
-            print("Connection shutting down")
-            return False
-        #binp = yarp.Bottle()
         binp = event_driven.vBottle()
         ok = binp.read(connection)
         if not(ok):
             print("Failed to read input")
             return False
-        data = event_driven.getData(binp)
-        self.addEvents(data)
+        self.q.put(binp)
         return True
 
 class Buffer():
-    def __init__(self, timestep):
+    def __init__(self, timestep, limit=1<<24):
         self.storage = []
         self.current=None
         self.timestep = timestep
+        self.s = None
+        self.limit = limit
+        self.zeroarray = np.zeros((0,5),dtype=np.uint32)
+
 
     def add_data(self, x):
         """
@@ -64,7 +121,7 @@ class Buffer():
         returned. Instead the timestep will just be silently ignored.
         """
         out = []
-        classes = x[:,1]//self.timestep
+        classes = np.uint16(x[:,1]//self.timestep)
         splitted = split(x, classes)
         if len(splitted)==1:
             if self.current == classes[0]:
@@ -87,34 +144,49 @@ class Buffer():
             out += splitted[1:-1]
             self.storage.append(splitted[-1])
             self.current = classes[-1]
-        return out
-        #if self.current is None:
-        #    self.current = new_data[0,1]//self.timestep
-        #last = new_data[-1,1]//self.timestep
-        #print((self.current, last))
-        #self.storage.append(new_data)
-        #if self.current != last:
-        #    out = np.concatenate([x[np.where((
-        #             x[:,1]//self.timestep == self.current))] for x in
-        #        self.storage])
-        #    self.storage = self.storage[-1:]
-        #    self.current = last
-        #    return out
+        if out == []:
+            return out
+        if self.s is None:
+            self.s = out[0][0,1]//self.timestep
+        e = out[-1][0,1]//self.timestep
+        if self.s<=e:
+            tws = np.arange(self.s, e+1)
+        else:
+            tws = np.concatenate([
+                np.arange(self.s,self.limit//self.timestep+1),
+                np.arange(e+1)
+                ])
+        mapping = {a:b for a, b in zip(tws,np.arange(len(tws)))}
+        li = [x for x in range(len(tws))]
+        for x in out: li[mapping[x[0,1]//self.timestep]] = x
+        indices = np.where([type(x)==int for x in li])[0]
+        for i in indices: li[i] = self.zeroarray
+        self.s = out[-1][0,1]//self.timestep + 1
+        return li
 
     
 
 def split(sequence, classes):
-    change_indices = np.where(np.concatenate([[0], np.diff(classes)]))[0]
-    return np.split(sequence, change_indices)
-
+    #change_indices = np.where(np.concatenate([[0], np.diff(classes)]))[0]
+    change_indices = np.where(np.diff(classes))[0]+1
+    out = np.split(sequence, change_indices)
+    return out
 
 if __name__ == '__main__':
-    timestep = 10000
+    timestep = 1000
     if len(sys.argv) > 1:
         timestep = int(sys.argv[1])
     yarp.Network.init()
-    bottleBuffer = VBottleBuffer(timestep, "/buffer:i")
+    bottleBuffer = VBottleBuffer(timestep=timestep, portname="/buffer:i")
     with bottleBuffer as buf:
+        i=0
         while True:
             data = bottleBuffer.timeFrameQueue.get()
-            print(data.shape, data[-1][1],data[0][1])
+            if data.shape[0]==0:
+                print(';', end='')
+            else:
+                print('.', end='')
+            i+=1
+            if not i%100:
+                print('')
+    yarp.Network.fini()

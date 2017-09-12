@@ -47,7 +47,7 @@ class _BufferProcess(multiprocessing.Process):
             outp = self.buf.add_data(inp)
             for x in outp:
                 self.out_q.put(x)
-            #if not i%10:
+            #if not i%1000:
             #    print('q_in:%d, out_q:%d, num:%d' %(self.q_in.qsize(),
             #                                self.out_q.qsize(),
             #                                       len(outp)))
@@ -58,47 +58,40 @@ class _ReceiverProcess(multiprocessing.Process):
 
         self.out_q = out_q
         self.decode_q = queue.Queue()
-        self.rec = Receiver(portname, q=self.decode_q)
+        self.rec = Receiver(q=self.decode_q)
         self.killswitch = killswitch
+        self.portname = portname
 
 
     def run(self):
         i=0
-        with self.rec as rec:
-            while not self.killswitch.is_set():
-                binp = self.decode_q.get()
-                data = event_driven.getData(binp)
-                self.out_q.put(data)
-                i+=1
-                #if not i%10:
-                #    print('decode_q:%d, out_q:%d' %(self.decode_q.qsize(),
-                #                                        self.out_q.qsize()))
+        input_port = yarp.BufferedPortBottle()
+        input_port.open(self.portname);
+        input_port.useCallback(self.rec)
+        while not self.killswitch.is_set():
+            b = self.decode_q.get()
+            binp = event_driven.bottleToVBottle(b)
+            data = event_driven.getData(binp)
+            self.out_q.put(data)
+            i+=1
+            #if not i%10:
+            #    print('decode_q:%d, out_q:%d' %(self.decode_q.qsize(),
+            #                                        self.out_q.qsize()))
 
 
-class Receiver(yarp.PortReader):
+class Receiver(yarp.BottleCallback):
 
-    def __init__(self, portname, q=queue.Queue()):
+    def __init__(self, q=queue.Queue()):
         super().__init__()
         self.q = q
-        self.portname = portname
         self.last = 0
 
-    def __enter__(self):
-        self.pi = yarp.Port()
-        self.pi.setReader(self)
-        self.pi.open(self.portname);
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        pass
     
-    def read(self, connection):
-        binp = event_driven.vBottle()
-        ok = binp.read(connection)
-        if not(ok):
-            print("Failed to read input")
-            return False
-        self.q.put(binp)
-        return True
+    def onRead(self, *args):
+        b = yarp.Bottle(args[0])
+        self.q.put(b)
+        return
+
 
 class Buffer():
     def __init__(self, timestep, limit=1<<24):
@@ -110,19 +103,29 @@ class Buffer():
         self.zeroarray = np.zeros((0,5),dtype=np.uint32)
 
 
-    def add_data(self, x):
+    def add_data(self, new_data):
         """
         add_data is called when new data should be inserted. The data is then
         stored and if a timestep has passed, according to the internal
         timestamps, all events within this timestep will be concatenated into one
         numpy array. All completed time windows, given the stored and new data,
         are then returned.
-        Note:If no events occur within a timestep, no empty array will be
-        returned. Instead the timestep will just be silently ignored.
+        Note:If no events occur within a timestep, an empty array will be
+        returned.
         """
+
+        ## Sometimes we get malformed data, if event rate is really high.
+        ## So we don't process these bottles when they match the heuristic.
+        if abs(np.int64(new_data[-1,1]) - np.int64(new_data[0,1])) > 1e6:
+            if new_data[-1,1] > 1e6:
+                print('dropped corrupted:')
+                return []
+
+        ## We first generate a splitted version containing all the different
+        ## timewindows which we find in the events
         out = []
-        classes = np.uint16(x[:,1]//self.timestep)
-        splitted = split(x, classes)
+        classes = np.uint16(new_data[:,1]//self.timestep)
+        splitted = split(new_data, classes)
         if len(splitted)==1:
             if self.current == classes[0]:
                 self.storage.append(splitted[0])
@@ -146,6 +149,8 @@ class Buffer():
             self.current = classes[-1]
         if out == []:
             return out
+        ## and finally we insert empty time windows if there were no events
+        ## in the window
         if self.s is None:
             self.s = out[0][0,1]//self.timestep
         e = out[-1][0,1]//self.timestep
@@ -158,7 +163,9 @@ class Buffer():
                 ])
         mapping = {a:b for a, b in zip(tws,np.arange(len(tws)))}
         li = [x for x in range(len(tws))]
-        for x in out: li[mapping[x[0,1]//self.timestep]] = x
+        for x in out:
+            li[mapping[x[0,1]//self.timestep]] = x
+
         indices = np.where([type(x)==int for x in li])[0]
         for i in indices: li[i] = self.zeroarray
         self.s = out[-1][0,1]//self.timestep + 1
@@ -186,6 +193,8 @@ if __name__ == '__main__':
                 print(';', end='')
             else:
                 print('.', end='')
+                #assert((data[0,1]%(1<<24)) == data[0,1]), 'test: %d %d' %\
+                #((data[0,1]%(1<<24)), data[0,1])
             i+=1
             if not i%100:
                 print('')

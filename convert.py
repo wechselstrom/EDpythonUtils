@@ -36,6 +36,7 @@ def main(argv):
             timestamp = float(timestamp)
             decoded = decode(raw_data)
             k.append(decoded)
+    print(k)
     np.save(gzip.open('out.npy.gz', 'wb', 5), np.concatenate(k))
 
 if __name__ == '__main__':

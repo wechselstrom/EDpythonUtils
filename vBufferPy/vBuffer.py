@@ -116,8 +116,8 @@ class Buffer():
 
         ## Sometimes we get malformed data, if event rate is really high.
         ## So we don't process these bottles when they match the heuristic.
-        if abs(np.int64(new_data[-1,1]) - np.int64(new_data[0,1])) > 1e6:
-            if new_data[-1,1] > 1e6:
+        if abs(np.int64(new_data[-1,1]) - np.int64(new_data[0,1])) > 1e5:
+            if new_data[-1,1] > 1e5:
                 print('dropped corrupted:')
                 return []
 
@@ -163,8 +163,15 @@ class Buffer():
                 ])
         mapping = {a:b for a, b in zip(tws,np.arange(len(tws)))}
         li = [x for x in range(len(tws))]
-        for x in out:
-            li[mapping[x[0,1]//self.timestep]] = x
+        try:
+            for x in out:
+                li[mapping[x[0,1]//self.timestep]] = x
+        ## if our heuristic did not work... well we reset since there is not
+        ## much else we can do 
+        except KeyError:
+            self.storage = []
+            self.s = None
+            return []
 
         indices = np.where([type(x)==int for x in li])[0]
         for i in indices: li[i] = self.zeroarray

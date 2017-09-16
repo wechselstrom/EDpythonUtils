@@ -33,6 +33,7 @@ class VBottleBuffer():
 class _BufferProcess(multiprocessing.Process):
     def __init__(self, q_in, out_q, killswitch, timestep, limit):
         super().__init__()
+        self.timestep = timestep
         self.buf = Buffer(timestep, limit)
         self.killswitch = killswitch
         self.q_in = q_in
@@ -40,14 +41,14 @@ class _BufferProcess(multiprocessing.Process):
 
 
     def run(self):
-        i=0
+        j=0
         while not self.killswitch.is_set():
-            i+=1
-            inp = self.q_in.get()
+            j+=1
+            (ts, inp) = self.q_in.get()
             outp = self.buf.add_data(inp)
-            for x in outp:
-                self.out_q.put(x)
-            #if not i%1000:
+            for i, x in enumerate(outp):
+                self.out_q.put((ts,x))#+(i*self.timestep*1e-6)
+            #if not j%1000:
             #    print('q_in:%d, out_q:%d, num:%d' %(self.q_in.qsize(),
             #                                self.out_q.qsize(),
             #                                       len(outp)))
@@ -68,11 +69,14 @@ class _ReceiverProcess(multiprocessing.Process):
         input_port = yarp.BufferedPortBottle()
         input_port.open(self.portname);
         input_port.useCallback(self.rec)
+        st = yarp.Stamp()
         while not self.killswitch.is_set():
+            input_port.getEnvelope(st)
+            ts =  st.getTime()
             b = self.decode_q.get()
             binp = event_driven.bottleToVBottle(b)
             data = event_driven.getData(binp)
-            self.out_q.put(data)
+            self.out_q.put((ts, data))
             i+=1
             #if not i%10:
             #    print('decode_q:%d, out_q:%d' %(self.decode_q.qsize(),
@@ -195,14 +199,15 @@ if __name__ == '__main__':
     with bottleBuffer as buf:
         i=0
         while True:
-            data = bottleBuffer.timeFrameQueue.get()
-            if data.shape[0]==0:
-                print(';', end='')
-            else:
-                print('.', end='')
-                #assert((data[0,1]%(1<<24)) == data[0,1]), 'test: %d %d' %\
-                #((data[0,1]%(1<<24)), data[0,1])
-            i+=1
-            if not i%100:
-                print('')
+            ts, data = bottleBuffer.timeFrameQueue.get()
+            print(ts)
+            #if data.shape[0]==0:
+            #    print(';', end='')
+            #else:
+            #    print('.', end='')
+            #    #assert((data[0,1]%(1<<24)) == data[0,1]), 'test: %d %d' %\
+            #    #((data[0,1]%(1<<24)), data[0,1])
+            #i+=1
+            #if not i%100:
+            #    print('')
     yarp.Network.fini()

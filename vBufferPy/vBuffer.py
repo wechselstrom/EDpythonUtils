@@ -13,13 +13,14 @@ import multiprocessing
 
 
 class VBottleBuffer():
-    def __init__(self, timestep=1000, limit=1<<24, portname='/vBuffer:i'):
+    def __init__(self, timestep=1000, limit=1<<24, step_duration=1000, portname='/vBuffer:i'):
         self.bottleQueue = multiprocessing.Queue()
         self.timeFrameQueue = multiprocessing.Queue()
         self.killswitch = multiprocessing.Event()
         self._p1 = _ReceiverProcess(self.bottleQueue, self.killswitch, portname)
         self._p2 = _BufferProcess(self.bottleQueue, self.timeFrameQueue,
-                                  self.killswitch, timestep, limit)
+                                  self.killswitch, timestep, limit,
+                                  step_duration)
     def __enter__(self):
         self._p1.start()
         self._p2.start()
@@ -31,10 +32,10 @@ class VBottleBuffer():
 
 
 class _BufferProcess(multiprocessing.Process):
-    def __init__(self, q_in, out_q, killswitch, timestep, limit):
+    def __init__(self, q_in, out_q, killswitch, timestep, limit, step_duration):
         super().__init__()
         self.timestep = timestep
-        self.buf = Buffer(timestep, limit)
+        self.buf = Buffer(timestep, limit, step_duration)
         self.killswitch = killswitch
         self.q_in = q_in
         self.out_q = out_q
@@ -98,10 +99,10 @@ class Receiver(yarp.BottleCallback):
 
 
 class Buffer():
-    def __init__(self, timestep, limit=1<<24):
+    def __init__(self, timestep, limit, step_duration):
         self.storage = []
         self.current=None
-        self.timestep = timestep
+        self.timestep = int(timestep*1000/step_duration)
         self.s = None
         self.limit = limit
         self.zeroarray = np.zeros((0,5),dtype=np.uint32)
